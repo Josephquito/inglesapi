@@ -23,26 +23,27 @@ async function bootstrap() {
 
   app.enableCors({
     origin: (origin, callback) => {
-      const allowed = [
+      const allowedExact = new Set([
         'https://inglesapp-kappa.vercel.app',
+        'http://localhost:4200',
         'http://localhost:3001',
         'http://localhost:5173',
-        'http://localhost:4200',
-      ];
+      ]);
 
-      // Permitir requests sin origin (Postman, server-to-server)
+      // Requests sin Origin (Postman, server-to-server)
       if (!origin) return callback(null, true);
 
-      // Permitir Vercel previews: https://xxx-vercel.app
-      if (origin.endsWith('.vercel.app')) return callback(null, true);
+      // Permitir Vercel (preview y prod) DEVOLVIENDO EL ORIGIN
+      if (origin.endsWith('.vercel.app')) return callback(null, origin);
 
-      if (allowed.includes(origin)) return callback(null, true);
+      if (allowedExact.has(origin)) return callback(null, origin);
 
       return callback(new Error(`CORS blocked: ${origin}`), false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    optionsSuccessStatus: 204,
   });
 
   const port = Number(process.env.PORT) || 3000;
