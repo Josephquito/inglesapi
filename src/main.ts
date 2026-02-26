@@ -1,5 +1,5 @@
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from 'src/app.module';
+import { AppModule } from './app.module';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { join } from 'path';
 import { existsSync, mkdirSync } from 'fs';
@@ -22,24 +22,7 @@ async function bootstrap() {
   });
 
   app.enableCors({
-    origin: (origin, callback) => {
-      const allowedExact = new Set([
-        'https://inglesapp-kappa.vercel.app',
-        'http://localhost:4200',
-        'http://localhost:3001',
-        'http://localhost:5173',
-      ]);
-
-      // Requests sin Origin (Postman, server-to-server)
-      if (!origin) return callback(null, true);
-
-      // Permitir Vercel (preview y prod) DEVOLVIENDO EL ORIGIN
-      if (origin.endsWith('.vercel.app')) return callback(null, origin);
-
-      if (allowedExact.has(origin)) return callback(null, origin);
-
-      return callback(new Error(`CORS blocked: ${origin}`), false);
-    },
+    origin: true, // refleja el Origin automáticamente
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
