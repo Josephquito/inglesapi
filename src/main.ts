@@ -8,33 +8,30 @@ import * as bodyParser from 'body-parser';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // ✅ AUMENTAR LÍMITE PARA JSON (base64, etc.)
-  app.use(bodyParser.json({ limit: '10mb' }));
-  app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+  // 🔎 DEBUG para confirmar que el request llega a Nest
+  app.use((req, res, next) => {
+    res.setHeader('X-APP-BUILD', 'cors-debug-1');
+    next();
+  });
 
-  // ✅ Middleware CORS "forzado" (incluye preflight OPTIONS)
+  // 🔥 CORS forzado + manejo de preflight
   app.use((req, res, next) => {
     const origin = req.headers.origin as string | undefined;
 
-    const allowed = new Set([
-      'https://inglesapp-kappa.vercel.app',
-      'http://localhost:4200',
-      'http://localhost:5173',
-      'http://localhost:3001',
-    ]);
-
-    if (origin && (allowed.has(origin) || origin.endsWith('.vercel.app'))) {
-      res.header('Access-Control-Allow-Origin', origin);
-      res.header('Vary', 'Origin');
-      res.header('Access-Control-Allow-Credentials', 'true');
-      res.header(
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader(
         'Access-Control-Allow-Methods',
         'GET,POST,PUT,PATCH,DELETE,OPTIONS',
       );
-      res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type,Authorization',
+      );
     }
 
-    // Responder preflight
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);
     }
@@ -42,21 +39,19 @@ async function bootstrap() {
     next();
   });
 
-  // ✅ Asegurar que exista la carpeta uploads en runtime
+  // ✅ body parser
+  app.use(bodyParser.json({ limit: '10mb' }));
+  app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
+
+  // ✅ uploads
   const uploadDir = join(process.cwd(), 'uploads');
   if (!existsSync(uploadDir)) mkdirSync(uploadDir, { recursive: true });
 
-  // ✅ Servir /uploads/* públicamente
   app.useStaticAssets(uploadDir, { prefix: '/uploads/' });
-
-  // ✅ Puedes dejarlo o quitarlo (con el middleware ya basta)
-  app.enableCors({
-    origin: true,
-    credentials: true,
-  });
 
   const port = Number(process.env.PORT) || 3000;
   await app.listen(port, '0.0.0.0');
+
   console.log(`Backend NestJS escuchando en puerto ${port}`);
 }
 
