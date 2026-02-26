@@ -8,35 +8,17 @@ import * as bodyParser from 'body-parser';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // 🔎 DEBUG para confirmar que el request llega a Nest
+  // 🔎 Debug temporal (luego lo quitas)
   app.use((req, res, next) => {
-    res.setHeader('X-APP-BUILD', 'cors-debug-1');
+    res.setHeader('X-APP-BUILD', 'cors-no-cookies-1');
     next();
   });
 
-  // 🔥 CORS forzado + manejo de preflight
-  app.use((req, res, next) => {
-    const origin = req.headers.origin as string | undefined;
-
-    if (origin) {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Vary', 'Origin');
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
-      res.setHeader(
-        'Access-Control-Allow-Methods',
-        'GET,POST,PUT,PATCH,DELETE,OPTIONS',
-      );
-      res.setHeader(
-        'Access-Control-Allow-Headers',
-        'Content-Type,Authorization',
-      );
-    }
-
-    if (req.method === 'OPTIONS') {
-      return res.sendStatus(204);
-    }
-
-    next();
+  // ✅ CORS SIN cookies (NO credentials)
+  app.enableCors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   });
 
   // ✅ body parser
@@ -51,7 +33,6 @@ async function bootstrap() {
 
   const port = Number(process.env.PORT) || 3000;
   await app.listen(port, '0.0.0.0');
-
   console.log(`Backend NestJS escuchando en puerto ${port}`);
 }
 
