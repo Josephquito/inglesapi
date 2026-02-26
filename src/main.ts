@@ -8,39 +8,41 @@ import * as bodyParser from 'body-parser';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // 1. CONFIGURACIÓN DE CORS (Debe ir antes de los middlewares)
+  // 1. CORS: Configuración robusta para Vercel y Localhost
   app.enableCors({
-    // Reemplaza '*' por el dominio exacto de tu frontend
-    origin: 'https://inglesapp-kappa.vercel.app',
+    origin: [
+      'https://inglesapp-kappa.vercel.app', // Tu frontend en Vercel
+      'http://localhost:4200', // Tu desarrollo local
+    ],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
-    credentials: true, // Mantener en true si tu curl mostró que se espera esto
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Accept',
+      'X-Requested-With',
+    ],
+    credentials: true,
   });
 
-  // 2. MIDDLEWARES DE BODY PARSER
+  // 2. Middlewares de Body Parser
   app.use(bodyParser.json({ limit: '10mb' }));
   app.use(bodyParser.urlencoded({ limit: '10mb', extended: true }));
 
-  // 3. DEBUG TEMPORAL (Opcional)
-  app.use((req, res, next) => {
-    res.setHeader('X-APP-BUILD', 'cors-fix-v1');
-    next();
-  });
-
-  // 4. ARCHIVOS ESTÁTICOS / UPLOADS
+  // 3. Gestión de archivos estáticos (Uploads)
   const uploadDir = join(process.cwd(), 'uploads');
   if (!existsSync(uploadDir)) {
     mkdirSync(uploadDir, { recursive: true });
   }
   app.useStaticAssets(uploadDir, { prefix: '/uploads/' });
 
-  // 5. ESCUCHA DEL SERVIDOR
-  const port = Number(process.env.PORT) || 3000;
-  // Importante: En Render '0.0.0.0' es necesario
+  // 4. Configuración del puerto para Render
+  const port = process.env.PORT || 3000;
+
+  // Escuchar en '0.0.0.0' es vital para que Render asigne el puerto correctamente
   await app.listen(port, '0.0.0.0');
 
-  console.log(`🚀 Backend NestJS corriendo en: http://localhost:${port}`);
-  console.log(`🌍 Permitiendo CORS para: https://inglesapp-kappa.vercel.app`);
+  console.log(`🚀 Backend corriendo en puerto: ${port}`);
+  console.log(`✅ CORS habilitado para: https://inglesapp-kappa.vercel.app`);
 }
 
 bootstrap();
