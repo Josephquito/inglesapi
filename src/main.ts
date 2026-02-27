@@ -10,7 +10,11 @@ async function bootstrap() {
 
   // 2. CORS EXACTO al que te funciona (con Array y Credentials)
   app.enableCors({
-    origin: ['https://inglesapp-kappa.vercel.app', 'http://localhost:4200'],
+    origin: [
+      'https://inglesapp-kappa.vercel.app',
+      'http://localhost:4200',
+      'https://lambent-truffle-4eda19.netlify.app',
+    ],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
     credentials: true,
     allowedHeaders: 'Content-Type, Accept, Authorization',
