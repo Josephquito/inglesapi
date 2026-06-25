@@ -32,6 +32,10 @@ export class Pregunta {
   @Column({ type: 'text', nullable: true })
   url_multimedia: string | null;
 
+  // ✅ NUEVO: párrafo base (FILL_BLANK usa esto para el texto con los espacios {{blank_N}})
+  @Column({ type: 'text', nullable: true })
+  texto_base: string | null;
+
   // WRITING opcional
   @Column({ type: 'text', nullable: true })
   respuesta_esperada: string | null;

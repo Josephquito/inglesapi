@@ -118,7 +118,6 @@ export class RendicionesService {
       intento.fin_programado &&
       new Date() > new Date(intento.fin_programado)
     ) {
-      // lo dejamos que el flujo lo marque como expirado
       throw new ForbiddenException('Tiempo agotado');
     }
   }
@@ -140,7 +139,6 @@ export class RendicionesService {
       rol,
     );
 
-    // intentos usados
     const usados = await this.intentoRepo.count({
       where: {
         evaluacion: { id_evaluacion } as any,
@@ -173,13 +171,10 @@ export class RendicionesService {
       rol,
     );
 
-    // Estudiante solo si activa (ya validado arriba)
     if (!evaluacion.activa) {
-      // por si ADMIN/DOCENTE quieren probar
       throw new ForbiddenException('Evaluación inactiva');
     }
 
-    // cuántos intentos lleva
     const usados = await this.intentoRepo.count({
       where: {
         evaluacion: { id_evaluacion } as any,
@@ -240,7 +235,6 @@ export class RendicionesService {
         intento.evaluacion.curso.id_curso,
       );
 
-      // estudiante solo ve su intento
       if (r === 'ESTUDIANTE' && intento.estudiante.id_usuario !== userId) {
         throw new ForbiddenException('No autorizado');
       }
@@ -270,25 +264,58 @@ export class RendicionesService {
       order: { id_bloque: 'ASC' },
     });
 
-    // Sanitizar: ocultar es_correcta y la respuesta_esperada
-    const mapPregunta = (p: any) => ({
-      id_pregunta: p.id_pregunta,
-      texto: p.texto,
-      puntaje: Number(p.puntaje),
-      url_multimedia: p.url_multimedia,
-      auto_calificable: p.auto_calificable,
-      tipo: p.tipo,
-      opcionesRespuesta: (p.opcionesRespuesta ?? []).map((o: any) => ({
-        id_opcion: o.id_opcion,
-        texto: o.texto,
-      })),
-      emparejamientos: (p.emparejamientos ?? []).map((e: any) => ({
-        id_emparejamiento: e.id_emparejamiento,
-        izquierda: e.izquierda,
-        derecha: e.derecha,
-      })),
-      // NO enviar: respuesta_esperada, es_correcta
+    // ✅ FIX #2: traer las respuestas YA GUARDADAS de este intento.
+    // Antes este endpoint nunca consultaba RespuestaIntento, así que si el
+    // estudiante recargaba la página a mitad del examen, veía todo en blanco
+    // (aunque sus respuestas ya estaban guardadas en la base de datos).
+    const respuestas = await this.respRepo.find({
+      where: { intento: { id_intento } as any },
+      relations: ['pregunta', 'opcion_seleccionada'],
     });
+
+    const respPorPregunta = new Map<number, RespuestaIntento>();
+    for (const resp of respuestas) {
+      respPorPregunta.set(resp.pregunta.id_pregunta, resp);
+    }
+
+    // Sanitizar: ocultar es_correcta y la respuesta_esperada
+    const mapPregunta = (p: any) => {
+      const resp = respPorPregunta.get(p.id_pregunta);
+
+      return {
+        id_pregunta: p.id_pregunta,
+        texto: p.texto,
+        puntaje: Number(p.puntaje),
+        url_multimedia: p.url_multimedia,
+
+        // ✅ FIX #1: faltaba texto_base. Sin esto, un estudiante abriendo
+        // una pregunta FILL_BLANK no veía el párrafo, solo el banco y los
+        // espacios — no tenía contexto de qué estaba completando.
+        texto_base: p.texto_base ?? null,
+
+        auto_calificable: p.auto_calificable,
+        tipo: p.tipo,
+        opcionesRespuesta: (p.opcionesRespuesta ?? []).map((o: any) => ({
+          id_opcion: o.id_opcion,
+          texto: o.texto,
+          url_imagen: o.url_imagen,
+        })),
+        emparejamientos: (p.emparejamientos ?? []).map((e: any) => ({
+          id_emparejamiento: e.id_emparejamiento,
+          izquierda: e.izquierda,
+          derecha: e.derecha,
+        })),
+
+        // ✅ FIX #2: respuesta ya guardada (si existe), para que el front
+        // la repinte tal cual la espera `hydrateLocalFromBackend`.
+        respuesta_texto: resp?.respuesta_texto ?? null,
+        id_opcion: resp?.opcion_seleccionada?.id_opcion ?? null,
+        respuesta_matching: resp?.respuesta_matching ?? null,
+        url_audio: resp?.url_audio ?? null,
+
+        // NO enviar: respuesta_esperada, es_correcta
+      };
+    };
 
     return {
       evaluacion: {
@@ -296,12 +323,8 @@ export class RendicionesService {
         titulo: intento.evaluacion.titulo,
         tiene_tiempo: intento.evaluacion.tiene_tiempo,
         minutos: intento.evaluacion.minutos,
-
-        // ✅ NUEVO: flags de seguridad
         usa_camara: !!intento.evaluacion.usa_camara,
         valida_fraude: !!intento.evaluacion.valida_fraude,
-
-        // ✅ opcional pero útil para el front
         id_curso: intento.evaluacion.curso?.id_curso ?? null,
       },
       intento: {
@@ -330,8 +353,11 @@ export class RendicionesService {
   private async autocalificar(pregunta: Pregunta, dto: GuardarRespuestaDto) {
     const codigo = pregunta.tipo?.codigo;
 
-    // MULTIPLE_CHOICE
-    if (codigo === TipoPreguntaCodigo.MULTIPLE_CHOICE) {
+    if (
+      codigo === TipoPreguntaCodigo.MULTIPLE_CHOICE ||
+      codigo === TipoPreguntaCodigo.TRUE_FALSE ||
+      codigo === TipoPreguntaCodigo.CHOOSE_IMAGE
+    ) {
       const id_opcion = dto.id_opcion ?? null;
       if (!id_opcion) return { auto: true, ok: false, puntaje: 0 };
 
@@ -348,8 +374,10 @@ export class RendicionesService {
       return { auto: true, ok, puntaje };
     }
 
-    // MATCHING: comparar pares seleccionados contra los emparejamientos reales
-    if (codigo === TipoPreguntaCodigo.MATCHING) {
+    if (
+      codigo === TipoPreguntaCodigo.MATCHING ||
+      codigo === TipoPreguntaCodigo.FILL_BLANK
+    ) {
       const seleccion = dto.respuesta_matching ?? null;
 
       const reales = await this.empRepo.find({
@@ -381,10 +409,9 @@ export class RendicionesService {
       return { auto: true, ok, puntaje };
     }
 
-    // WRITING: si tiene respuesta_esperada, comparar normalizado exacto (simple)
     if (codigo === TipoPreguntaCodigo.WRITING) {
       if (!pregunta.auto_calificable || !pregunta.respuesta_esperada) {
-        return { auto: false, ok: false, puntaje: 0 }; // requiere revisión
+        return { auto: false, ok: false, puntaje: 0 };
       }
       const resp = this.normalizeExpected(dto.respuesta_texto ?? '');
       const ok =
@@ -394,7 +421,6 @@ export class RendicionesService {
       return { auto: true, ok, puntaje };
     }
 
-    // SPEAKING / otros: manual
     return { auto: false, ok: false, puntaje: 0 };
   }
 
@@ -424,7 +450,6 @@ export class RendicionesService {
       }
     }
 
-    // si ya expiró, marcamos y bloqueamos
     if (intento.estado !== IntentoEstado.EN_PROGRESO) {
       throw new ForbiddenException('El intento ya no está en progreso');
     }
@@ -436,7 +461,6 @@ export class RendicionesService {
       throw new ForbiddenException('Tiempo agotado');
     }
 
-    // validar que la pregunta pertenece a esa evaluación (suelta o dentro de bloque de esa evaluación)
     const pregunta = await this.preguntaRepo.findOne({
       where: { id_pregunta },
       relations: ['tipo', 'evaluacion', 'bloque', 'bloque.evaluacion'],
@@ -452,7 +476,6 @@ export class RendicionesService {
     if (!pertenece)
       throw new ForbiddenException('Pregunta no pertenece a esta evaluación');
 
-    // upsert respuesta
     return this.dataSource.transaction(async (manager) => {
       const respRepo = manager.getRepository(RespuestaIntento);
 
@@ -479,7 +502,6 @@ export class RendicionesService {
         });
       }
 
-      // set campos según dto (solo lo que venga)
       if (dto.respuesta_texto !== undefined)
         resp.respuesta_texto = dto.respuesta_texto ?? null;
       if (dto.url_audio !== undefined) resp.url_audio = dto.url_audio ?? null;
@@ -494,13 +516,11 @@ export class RendicionesService {
         }
       }
 
-      // autocalificar si aplica
       const calc = await this.autocalificar(pregunta, dto);
       if (calc.auto) {
         resp.auto_calificada = true;
         resp.es_correcta = calc.ok;
         resp.puntaje_obtenido = this.round2(calc.puntaje);
-        // si no auto, lo dejamos para revisión
       } else {
         resp.auto_calificada = false;
         resp.es_correcta = false;
@@ -549,10 +569,9 @@ export class RendicionesService {
     }
 
     if (intento.estado !== IntentoEstado.EN_PROGRESO) {
-      return { ok: true, estado: intento.estado }; // idempotente
+      return { ok: true, estado: intento.estado };
     }
 
-    // si se pasó el tiempo
     if (
       intento.fin_programado &&
       new Date() > new Date(intento.fin_programado)
@@ -563,11 +582,6 @@ export class RendicionesService {
 
     const idEval = intento.evaluacion.id_evaluacion;
 
-    // =========================================================
-    // 1) Traer TODAS las preguntas de la evaluación (sueltas + subpreguntas)
-    // =========================================================
-
-    // sueltas
     const preguntasSueltas = await this.preguntaRepo.find({
       where: {
         evaluacion: { id_evaluacion: idEval } as any,
@@ -578,7 +592,6 @@ export class RendicionesService {
       order: { id_pregunta: 'ASC' },
     });
 
-    // subpreguntas (pertenecen a bloques de esa evaluación)
     const preguntasSub = await this.preguntaRepo
       .createQueryBuilder('p')
       .innerJoin('p.bloque', 'b')
@@ -589,15 +602,11 @@ export class RendicionesService {
 
     const todasLasPreguntas = [...preguntasSueltas, ...preguntasSub];
 
-    // =========================================================
-    // 2) Traer respuestas guardadas del intento
-    // =========================================================
     const respuestas = await this.respRepo.find({
       where: { intento: { id_intento } as any },
       relations: ['pregunta', 'pregunta.tipo'],
     });
 
-    // map: id_pregunta -> puntaje_obtenido
     const puntajePorPregunta = new Map<number, number>();
     for (const resp of respuestas) {
       puntajePorPregunta.set(
@@ -606,9 +615,6 @@ export class RendicionesService {
       );
     }
 
-    // =========================================================
-    // 3) Sumar puntajes: si NO hay respuesta => 0
-    // =========================================================
     const puntaje_total = this.round2(
       todasLasPreguntas.reduce((acc, p) => {
         const v = puntajePorPregunta.get(p.id_pregunta) ?? 0;
@@ -618,13 +624,7 @@ export class RendicionesService {
 
     const calificacion = puntaje_total;
 
-    // =========================================================
-    // 4) Pendiente de revisión:
-    //    true SOLO si el estudiante RESPONDIÓ una pregunta manual (no auto_calificable)
-    // =========================================================
     const manualPendiente = respuestas.some((resp) => {
-      // manual = no auto_calificable (ej: SPEAKING, WRITING sin respuesta_esperada)
-      // y además que haya algo respondido (texto/audio/matching/opción)
       const p = resp.pregunta;
       const respondioAlgo =
         !!resp.respuesta_texto ||
@@ -689,7 +689,6 @@ export class RendicionesService {
     };
   }
 
-  //detalle del intento para revisar:
   async obtenerIntentoParaRevision(
     id_intento: number,
     userId: number,
@@ -751,16 +750,14 @@ export class RendicionesService {
         puntaje: Number(p.puntaje),
         auto_calificable: p.auto_calificable,
         tipo: p.tipo,
-
-        // ✅ MEDIA de la pregunta (para que el docente también la vea)
         url_multimedia: p.url_multimedia ?? null,
-
-        // docente puede ver esta referencia
+        texto_base: p.texto_base ?? null,
         respuesta_esperada: p.respuesta_esperada ?? null,
 
         opcionesRespuesta: (p.opcionesRespuesta ?? []).map((o: any) => ({
           id_opcion: o.id_opcion,
           texto: o.texto,
+          url_imagen: o.url_imagen,
           es_correcta: o.es_correcta,
         })),
 
@@ -774,15 +771,11 @@ export class RendicionesService {
           ? {
               id_respuesta: resp.id_respuesta,
               respuesta_texto: resp.respuesta_texto,
-
-              // ✅ AUDIO del estudiante (SPEAKING)
               url_audio: resp.url_audio,
-
               respuesta_matching: resp.respuesta_matching,
               opcion_seleccionada: resp.opcion_seleccionada
                 ? { id_opcion: resp.opcion_seleccionada.id_opcion }
                 : null,
-
               auto_calificada: resp.auto_calificada,
               es_correcta: resp.es_correcta,
               puntaje_obtenido: Number(resp.puntaje_obtenido ?? 0),
@@ -825,7 +818,6 @@ export class RendicionesService {
     };
   }
 
-  //Calificar una pregunta manual
   async calificarPreguntaIntento(
     id_intento: number,
     id_pregunta: number,
@@ -872,7 +864,6 @@ export class RendicionesService {
       throw new BadRequestException('Esta pregunta es autocalificable');
     }
 
-    // ✅ total preguntas (sueltas + subpreguntas en bloques)
     const totalSueltas = await this.preguntaRepo.count({
       where: {
         evaluacion: { id_evaluacion: idEval } as any,
@@ -904,7 +895,6 @@ export class RendicionesService {
         relations: ['opcion_seleccionada'],
       });
 
-      // Si no existe respuesta, la creamos (por seguridad)
       if (!resp) {
         resp = respRepo.create({
           intento: { id_intento } as any,
@@ -920,24 +910,17 @@ export class RendicionesService {
         });
       }
 
-      // ✅ calificación manual simple
       resp.auto_calificada = false;
       resp.es_correcta = !!dto.es_correcta;
-
-      // ✅ al marcar correcto/incorrecto ya se considera revisada
       resp.revisada = true;
-
-      // ✅ puntaje lo define el sistema (ignora dto.puntaje_obtenido)
       resp.puntaje_obtenido = this.round2(puntajeAuto);
 
-      // comentario opcional (si tu entity lo tiene)
       if (dto.comentario_docente !== undefined) {
         (resp as any).comentario_docente = dto.comentario_docente;
       }
 
       const saved = await respRepo.save(resp);
 
-      // ✅ al menos ya hubo revisión manual → ya no está pendiente
       await manager.update(
         EvaluacionIntento,
         { id_intento } as any,
@@ -956,7 +939,6 @@ export class RendicionesService {
     });
   }
 
-  //Boton de calificar intento recalcula todo y actualiza el estado de pendiente de reivision
   async calificarIntentoFinal(id_intento: number, userId: number, rol: string) {
     const r = this.normalizeRol(rol);
 
@@ -981,7 +963,6 @@ export class RendicionesService {
 
     const idEval = intento.evaluacion.id_evaluacion;
 
-    // 1) preguntas sueltas
     const preguntasSueltas = await this.preguntaRepo.find({
       where: {
         evaluacion: { id_evaluacion: idEval } as any,
@@ -991,7 +972,6 @@ export class RendicionesService {
       order: { id_pregunta: 'ASC' },
     });
 
-    // 2) subpreguntas
     const preguntasSub = await this.preguntaRepo
       .createQueryBuilder('p')
       .innerJoin('p.bloque', 'b')
@@ -1002,7 +982,6 @@ export class RendicionesService {
 
     const todas = [...preguntasSueltas, ...preguntasSub];
 
-    // 3) respuestas del intento
     const respuestas = await this.respRepo.find({
       where: { intento: { id_intento } as any },
       relations: ['pregunta', 'opcion_seleccionada'],
@@ -1011,7 +990,6 @@ export class RendicionesService {
     const respMap = new Map<number, RespuestaIntento>();
     for (const resp of respuestas) respMap.set(resp.pregunta.id_pregunta, resp);
 
-    // 4) sumar puntajes (si no hay respuesta => 0)
     const puntaje_total = this.round2(
       todas.reduce((acc, p) => {
         const resp = respMap.get(p.id_pregunta);
@@ -1022,8 +1000,6 @@ export class RendicionesService {
 
     const calificacion = puntaje_total;
 
-    // 5) pendiente_revision real:
-    // true si existe manual respondida y NO revisada
     const pendiente_revision = todas.some((p) => {
       if (p.auto_calificable) return false;
 
@@ -1254,7 +1230,6 @@ export class RendicionesService {
 
     this.assertIntentoActivo(intento);
 
-    // ✅ Solo aplica si la evaluación requiere antifraude o cámara
     if (!intento.evaluacion.valida_fraude && !intento.evaluacion.usa_camara) {
       return {
         ok: true,
@@ -1273,14 +1248,10 @@ export class RendicionesService {
 
     await this.intentoRepo.update({ id_intento }, {
       fraude_warnings: next,
-
-      // ✅ nombres reales en tu entity
       suspendido_por_fraude: debeSuspender,
       ultimo_motivo_fraude: debeSuspender
         ? motivo
         : ((intento as any).ultimo_motivo_fraude ?? null),
-
-      // ✅ si toca suspender, también cambiamos el estado
       estado: debeSuspender ? IntentoEstado.SUSPENDIDO : intento.estado,
       fin_real: debeSuspender ? new Date() : intento.fin_real,
       updated_at: new Date(),

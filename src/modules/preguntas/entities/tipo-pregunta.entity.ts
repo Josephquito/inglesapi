@@ -9,6 +9,9 @@ export enum TipoPreguntaCodigo {
   LISTENING = 'LISTENING',
   MATCHING = 'MATCHING',
   READING = 'READING',
+  TRUE_FALSE = 'TRUE_FALSE',
+  FILL_BLANK = 'FILL_BLANK',
+  CHOOSE_IMAGE = 'CHOOSE_IMAGE',
 }
 
 @Entity('tipo_pregunta')

@@ -15,6 +15,7 @@ import {
 import { Evaluacion } from '../evaluaciones/entities/evaluacion.entity';
 import { Pregunta } from './entities/pregunta.entity';
 import { OpcionRespuesta } from './entities/opcion-respuesta.entity';
+import { Emparejamiento } from './entities/emparejamiento.entity'; // ✅ NUEVO
 import { CursoUsuario } from '../cursos/entities/curso-usuario.entity';
 
 import { CrearBloqueDto } from './dto/crear-bloque.dto';
@@ -147,12 +148,153 @@ export class BloquePreguntaService {
     }
 
     if (bloquearSiActiva && evaluacion.activa) {
-      throw new ForbiddenException(
-        'No puedes modificar: la evaluación está activa',
-      );
+      evaluacion.activa = false;
+      await this.evaluacionRepo.save(evaluacion);
     }
 
     return evaluacion;
+  }
+
+  // ✅ NUEVO: reglas de validación por tipo, para subpreguntas de bloque
+  private validarPorTipoSubpregunta(
+    tipo: TipoPregunta,
+    dto: CrearPreguntaDto | UpdatePreguntaDto,
+  ): {
+    usaOpciones: boolean;
+    usaPares: boolean;
+    respuesta_esperada?: string | null;
+    auto_calificable?: boolean;
+    texto_base?: string;
+  } {
+    if (!tipo.activo) {
+      throw new BadRequestException('Tipo de pregunta inactivo');
+    }
+
+    const codigo = tipo.codigo;
+
+    if (
+      codigo === TipoPreguntaCodigo.LISTENING ||
+      codigo === TipoPreguntaCodigo.READING
+    ) {
+      throw new BadRequestException(
+        'Una subpregunta no puede ser LISTENING/READING',
+      );
+    }
+    if (
+      codigo === TipoPreguntaCodigo.WRITING ||
+      codigo === TipoPreguntaCodigo.SPEAKING
+    ) {
+      throw new BadRequestException(
+        `${codigo} no está soportado como subpregunta de bloque`,
+      );
+    }
+
+    const opciones = (dto as any).opcionesRespuesta ?? undefined;
+    const pares = (dto as any).emparejamientos ?? undefined;
+
+    // MULTIPLE_CHOICE
+    if (codigo === TipoPreguntaCodigo.MULTIPLE_CHOICE) {
+      if (!opciones || opciones.length < 2) {
+        throw new BadRequestException('Debe tener al menos 2 opciones');
+      }
+      const correctas = opciones.filter((o: any) => !!o.es_correcta).length;
+      if (tipo.requiere_seleccion && correctas < 1) {
+        throw new BadRequestException('Marca al menos una opción correcta');
+      }
+      if (pares?.length) {
+        throw new BadRequestException(
+          'MULTIPLE_CHOICE no permite emparejamientos',
+        );
+      }
+      return { usaOpciones: true, usaPares: false };
+    }
+
+    // TRUE_FALSE
+    if (codigo === TipoPreguntaCodigo.TRUE_FALSE) {
+      if (!opciones || opciones.length !== 2) {
+        throw new BadRequestException(
+          'TRUE_FALSE requiere exactamente 2 opciones (True/False)',
+        );
+      }
+      const correctas = opciones.filter((o: any) => !!o.es_correcta).length;
+      if (correctas !== 1) {
+        throw new BadRequestException(
+          'TRUE_FALSE requiere exactamente una opción correcta',
+        );
+      }
+      return { usaOpciones: true, usaPares: false };
+    }
+
+    // CHOOSE_IMAGE
+    if (codigo === TipoPreguntaCodigo.CHOOSE_IMAGE) {
+      if (!opciones || opciones.length !== 2) {
+        throw new BadRequestException(
+          'CHOOSE_IMAGE requiere exactamente 2 opciones (imágenes)',
+        );
+      }
+      const sinImagen = opciones.some((o: any) => !o.url_imagen);
+      if (sinImagen) {
+        throw new BadRequestException(
+          'Cada opción de CHOOSE_IMAGE requiere url_imagen',
+        );
+      }
+      const correctas = opciones.filter((o: any) => !!o.es_correcta).length;
+      if (correctas !== 1) {
+        throw new BadRequestException(
+          'CHOOSE_IMAGE requiere exactamente una opción correcta',
+        );
+      }
+      return { usaOpciones: true, usaPares: false };
+    }
+
+    // MATCHING
+    if (codigo === TipoPreguntaCodigo.MATCHING) {
+      if (!pares || pares.length < 2) {
+        throw new BadRequestException('MATCHING requiere al menos 2 pares');
+      }
+      if (opciones?.length) {
+        throw new BadRequestException(
+          'MATCHING no usa opciones multiple choice',
+        );
+      }
+      return { usaOpciones: false, usaPares: true };
+    }
+
+    // FILL_BLANK
+    if (codigo === TipoPreguntaCodigo.FILL_BLANK) {
+      const textoBase = (dto as any).texto_base;
+      if (!textoBase || !String(textoBase).trim()) {
+        throw new BadRequestException(
+          'FILL_BLANK requiere el párrafo con los espacios (texto_base)',
+        );
+      }
+      if (!pares || pares.length < 1) {
+        throw new BadRequestException(
+          'FILL_BLANK requiere al menos 1 espacio (emparejamiento espacio→palabra)',
+        );
+      }
+      if (!opciones || opciones.length < 2) {
+        throw new BadRequestException(
+          'FILL_BLANK requiere el banco de palabras (mínimo 2 opciones)',
+        );
+      }
+
+      const texto = String(textoBase);
+      for (const par of pares) {
+        const token = `{{blank_${par.izquierda}}}`;
+        if (!texto.includes(token)) {
+          throw new BadRequestException(
+            `El párrafo no contiene el espacio ${token}`,
+          );
+        }
+      }
+
+      return { usaOpciones: true, usaPares: true, texto_base: texto.trim() };
+    }
+
+    throw new BadRequestException(
+      'Tipo de pregunta no soportado como subpregunta',
+    );
   }
 
   async crearBloque(
@@ -298,7 +440,7 @@ export class BloquePreguntaService {
     return { ok: true };
   }
 
-  // Subpregunta MC dentro del bloque (SIN orden)
+  // Subpregunta dentro del bloque (cualquier tipo soportado, no solo MC)
   async crearSubpreguntaMC(
     id_bloque: number,
     dto: CrearPreguntaDto,
@@ -318,56 +460,61 @@ export class BloquePreguntaService {
       true,
     );
 
-    const tipoMC = await this.tipoRepo.findOne({
-      where: { codigo: TipoPreguntaCodigo.MULTIPLE_CHOICE },
+    if (!dto.id_tipo_pregunta) {
+      throw new BadRequestException('id_tipo_pregunta es requerido');
+    }
+    const tipo = await this.tipoRepo.findOne({
+      where: { id_tipo_pregunta: dto.id_tipo_pregunta },
     });
-    if (!tipoMC)
-      throw new BadRequestException(
-        'No existe tipo MULTIPLE_CHOICE (seed requerido)',
-      );
+    if (!tipo) throw new BadRequestException('Tipo inválido');
 
-    if (!dto.opcionesRespuesta || dto.opcionesRespuesta.length < 2) {
-      throw new BadRequestException(
-        'La subpregunta debe tener al menos 2 opciones',
-      );
-    }
-    const correctas = dto.opcionesRespuesta.filter(
-      (o) => !!o.es_correcta,
-    ).length;
-    if (tipoMC.requiere_seleccion && correctas < 1) {
-      throw new BadRequestException('Marca al menos una opción correcta');
-    }
+    const reglas = this.validarPorTipoSubpregunta(tipo, dto);
 
     const idEval = bloque.evaluacion.id_evaluacion;
 
     return this.dataSource.transaction(async (manager) => {
       const p = manager.getRepository(Pregunta).create({
         texto: dto.texto,
-        puntaje: 0, // ✅ calculado por recálculo
+        puntaje: 0,
         url_multimedia: dto.url_multimedia ?? null,
-        respuesta_esperada: null,
+        texto_base: (reglas as any).texto_base ?? null, // ✅ NUEVO
+        respuesta_esperada: reglas.respuesta_esperada ?? null,
         auto_calificable: true,
         evaluacion: null,
         bloque: { id_bloque } as any,
-        tipo: { id_tipo_pregunta: tipoMC.id_tipo_pregunta } as any,
+        tipo: { id_tipo_pregunta: tipo.id_tipo_pregunta } as any,
       });
 
       const saved = await manager.getRepository(Pregunta).save(p);
 
-      const ops = dto.opcionesRespuesta!.map((o) =>
-        manager.getRepository(OpcionRespuesta).create({
-          texto: o.texto,
-          es_correcta: !!o.es_correcta,
-          pregunta: { id_pregunta: saved.id_pregunta } as any,
-        }),
-      );
-      await manager.getRepository(OpcionRespuesta).save(ops);
+      if (reglas.usaOpciones && dto.opcionesRespuesta?.length) {
+        const ops = dto.opcionesRespuesta.map((o) =>
+          manager.getRepository(OpcionRespuesta).create({
+            texto: o.texto ?? null,
+            url_imagen: o.url_imagen ?? null,
+            es_correcta: !!o.es_correcta,
+            pregunta: { id_pregunta: saved.id_pregunta } as any,
+          }),
+        );
+        await manager.getRepository(OpcionRespuesta).save(ops);
+      }
+
+      if (reglas.usaPares && dto.emparejamientos?.length) {
+        const pares = dto.emparejamientos.map((par) =>
+          manager.getRepository(Emparejamiento).create({
+            izquierda: par.izquierda,
+            derecha: par.derecha,
+            pregunta: { id_pregunta: saved.id_pregunta } as any,
+          }),
+        );
+        await manager.getRepository(Emparejamiento).save(pares);
+      }
 
       await this.recalcularPuntajesEvaluacion(idEval, manager);
 
       return manager.getRepository(Pregunta).findOne({
         where: { id_pregunta: saved.id_pregunta },
-        relations: ['tipo', 'opcionesRespuesta'],
+        relations: ['tipo', 'opcionesRespuesta', 'emparejamientos'],
       });
     });
   }
@@ -388,14 +535,15 @@ export class BloquePreguntaService {
 
     return this.preguntaRepo.find({
       where: { bloque: { id_bloque } as any },
-      relations: ['tipo', 'opcionesRespuesta'],
+      relations: ['tipo', 'opcionesRespuesta', 'emparejamientos'], // ✅ + emparejamientos
       order: { id_pregunta: 'ASC' }, // ✅ sin orden
     });
   }
+
   async editarSubpreguntaMC(
     id_bloque: number,
     id_pregunta: number,
-    dto: UpdatePreguntaDto, // o CrearPreguntaDto
+    dto: UpdatePreguntaDto,
     userId: number,
     rol: string,
   ) {
@@ -414,7 +562,7 @@ export class BloquePreguntaService {
 
     const pregunta = await this.preguntaRepo.findOne({
       where: { id_pregunta },
-      relations: ['bloque', 'tipo', 'opcionesRespuesta'],
+      relations: ['bloque', 'tipo', 'opcionesRespuesta', 'emparejamientos'],
     });
     if (!pregunta) throw new NotFoundException('Subpregunta no encontrada');
 
@@ -425,41 +573,30 @@ export class BloquePreguntaService {
       throw new BadRequestException('La pregunta no pertenece a este bloque');
     }
 
-    const tipoMC = await this.tipoRepo.findOne({
-      where: { codigo: TipoPreguntaCodigo.MULTIPLE_CHOICE },
+    const tipoFinalId = dto.id_tipo_pregunta ?? pregunta.tipo.id_tipo_pregunta;
+    const tipo = await this.tipoRepo.findOne({
+      where: { id_tipo_pregunta: tipoFinalId },
     });
-    if (!tipoMC)
-      throw new BadRequestException(
-        'No existe tipo MULTIPLE_CHOICE (seed requerido)',
-      );
+    if (!tipo) throw new BadRequestException('Tipo inválido');
 
-    // validaciones MC
-    const ops = (dto as any).opcionesRespuesta ?? undefined;
     if (!dto.texto || !dto.texto.trim()) {
       throw new BadRequestException('Escribe el enunciado');
     }
-    if (!ops || ops.length < 2) {
-      throw new BadRequestException(
-        'La subpregunta debe tener al menos 2 opciones',
-      );
-    }
-    const correctas = ops.filter((o: any) => !!o.es_correcta).length;
-    if (tipoMC.requiere_seleccion && correctas < 1) {
-      throw new BadRequestException('Marca al menos una opción correcta');
-    }
+
+    const reglas = this.validarPorTipoSubpregunta(tipo, dto);
 
     const idEval = bloque.evaluacion.id_evaluacion;
 
     return this.dataSource.transaction(async (manager) => {
       pregunta.texto = dto.texto ?? pregunta.texto;
-      if ((dto as any).url_multimedia !== undefined) {
-        pregunta.url_multimedia = (dto as any).url_multimedia ?? null;
+      if (dto.url_multimedia !== undefined) {
+        pregunta.url_multimedia = dto.url_multimedia ?? null;
       }
 
-      // forzar tipo MC
-      pregunta.tipo = { id_tipo_pregunta: tipoMC.id_tipo_pregunta } as any;
+      pregunta.tipo = { id_tipo_pregunta: tipo.id_tipo_pregunta } as any;
       pregunta.respuesta_esperada = null;
-      pregunta.auto_calificable = true;
+      pregunta.auto_calificable = reglas.auto_calificable ?? true;
+      pregunta.texto_base = (reglas as any).texto_base ?? null; // ✅ NUEVO
 
       await manager.getRepository(Pregunta).save(pregunta);
 
@@ -468,20 +605,39 @@ export class BloquePreguntaService {
         .getRepository(OpcionRespuesta)
         .delete({ pregunta: { id_pregunta } as any });
 
-      const newOps = ops.map((o: any) =>
-        manager.getRepository(OpcionRespuesta).create({
-          texto: o.texto,
-          es_correcta: !!o.es_correcta,
-          pregunta: { id_pregunta } as any,
-        }),
-      );
-      await manager.getRepository(OpcionRespuesta).save(newOps);
+      if (reglas.usaOpciones && dto.opcionesRespuesta?.length) {
+        const newOps = dto.opcionesRespuesta.map((o) =>
+          manager.getRepository(OpcionRespuesta).create({
+            texto: o.texto ?? null,
+            url_imagen: o.url_imagen ?? null,
+            es_correcta: !!o.es_correcta,
+            pregunta: { id_pregunta } as any,
+          }),
+        );
+        await manager.getRepository(OpcionRespuesta).save(newOps);
+      }
+
+      // reemplazar pares
+      await manager
+        .getRepository(Emparejamiento)
+        .delete({ pregunta: { id_pregunta } as any });
+
+      if (reglas.usaPares && dto.emparejamientos?.length) {
+        const newPares = dto.emparejamientos.map((par) =>
+          manager.getRepository(Emparejamiento).create({
+            izquierda: par.izquierda,
+            derecha: par.derecha,
+            pregunta: { id_pregunta } as any,
+          }),
+        );
+        await manager.getRepository(Emparejamiento).save(newPares);
+      }
 
       await this.recalcularPuntajesEvaluacion(idEval, manager);
 
       return manager.getRepository(Pregunta).findOne({
         where: { id_pregunta },
-        relations: ['tipo', 'opcionesRespuesta'],
+        relations: ['tipo', 'opcionesRespuesta', 'emparejamientos'],
       });
     });
   }

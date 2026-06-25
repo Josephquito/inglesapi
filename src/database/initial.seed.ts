@@ -124,6 +124,30 @@ export async function runSeed(app: any) {
       requiere_seleccion: false,
       es_bloque: true,
     },
+    {
+      codigo: TipoPreguntaCodigo.TRUE_FALSE,
+      nombre: 'Verdadero o Falso',
+      activo: true,
+      permite_opciones: true,
+      requiere_seleccion: true,
+      es_bloque: false,
+    },
+    {
+      codigo: TipoPreguntaCodigo.FILL_BLANK,
+      nombre: 'Completar espacios',
+      activo: true,
+      permite_opciones: false,
+      requiere_seleccion: false,
+      es_bloque: false,
+    },
+    {
+      codigo: TipoPreguntaCodigo.CHOOSE_IMAGE,
+      nombre: 'Elegir imagen',
+      activo: true,
+      permite_opciones: true,
+      requiere_seleccion: true,
+      es_bloque: false,
+    },
   ];
 
   for (const t of tiposPregunta) {

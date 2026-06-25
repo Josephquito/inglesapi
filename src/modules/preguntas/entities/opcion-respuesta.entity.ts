@@ -12,8 +12,13 @@ export class OpcionRespuesta {
   @PrimaryGeneratedColumn({ name: 'id_opcion' })
   id_opcion: number;
 
-  @Column({ type: 'text' })
-  texto: string;
+  // ✅ ahora nullable: CHOOSE_IMAGE no necesita texto
+  @Column({ type: 'text', nullable: true })
+  texto: string | null;
+
+  // ✅ NUEVO: para CHOOSE_IMAGE
+  @Column({ type: 'text', nullable: true })
+  url_imagen: string | null;
 
   @Column({ default: false })
   es_correcta: boolean;
